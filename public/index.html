@@ -3,33 +3,61 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Matcher</title>
+    <title>VisioDating - Test Phase</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { margin: 0; background: #121212; color: white; font-family: sans-serif; overflow: hidden; }
-        #setup { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; gap: 10px; }
-        #video-container { display: none; width: 100vw; height: 100vh; position: relative; }
-        #remote-video { width: 100%; height: 100%; object-fit: cover; background: #000; }
-        #local-video { position: absolute; bottom: 20px; right: 20px; width: 30%; border: 2px solid white; border-radius: 8px; z-index: 10; }
-        button { padding: 12px 24px; border-radius: 5px; border: none; background: #007bff; color: white; cursor: pointer; }
-        input, select { padding: 10px; width: 200px; border-radius: 5px; border: 1px solid #444; background: #222; color: white; }
+        body { margin: 0; background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #setup { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; box-sizing: border-box; }
+        .form-group { width: 100%; max-width: 400px; margin-bottom: 15px; }
+        input, select, textarea { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #1e1e1e; color: white; box-sizing: border-box; }
+        .interests-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .interest-item { display: flex; align-items: center; font-size: 14px; }
+        .interest-item input { width: auto; margin-right: 8px; }
+        #video-container { display: none; width: 100vw; height: 100vh; position: relative; background: black; }
+        #remote-video { width: 100%; height: 100%; object-fit: cover; }
+        #local-video { position: absolute; bottom: 80px; right: 20px; width: 25%; border: 2px solid #555; border-radius: 12px; }
+        .overlay { position: absolute; bottom: 20px; left: 20px; right: 20px; background: rgba(0,0,0,0.6); padding: 15px; border-radius: 10px; pointer-events: none; }
+        .controls { position: absolute; top: 20px; right: 20px; }
+        button { padding: 12px 24px; border-radius: 8px; border: none; background: #007bff; color: white; font-weight: bold; cursor: pointer; }
+        button.skip { background: #dc3545; }
     </style>
 </head>
 <body>
 
     <div id="setup">
-        <h2>Enter Details</h2>
-        <select id="sex"><option value="male">Male</option><option value="female">Female</option></select>
-        <input type="number" id="age" placeholder="Your Age">
-        <input type="text" id="city" placeholder="City (For display)">
-        <button onclick="startApp()">Start Matching</button>
+        <h2>Create Profile</h2>
+        <div class="form-group">
+            <select id="sex"><option value="male">Male</option><option value="female">Female</option></select>
+        </div>
+        <div class="form-group">
+            <input type="number" id="age" placeholder="Age (e.g. 25)">
+        </div>
+        <div class="form-group">
+            <input type="text" id="education" placeholder="Education (e.g. University)">
+        </div>
+        <div class="form-group">
+            <textarea id="bio" placeholder="Short bio..." rows="3"></textarea>
+        </div>
+        <div class="form-group">
+            <label>Interests:</label>
+            <div class="interests-grid" id="interests-list">
+                <div class="interest-item"><input type="checkbox" value="sports"> Sports</div>
+                <div class="interest-item"><input type="checkbox" value="music"> Music</div>
+                <div class="interest-item"><input type="checkbox" value="travel"> Travel</div>
+                <div class="interest-item"><input type="checkbox" value="gaming"> Gaming</div>
+                <div class="interest-item"><input type="checkbox" value="coding"> Coding</div>
+                <div class="interest-item"><input type="checkbox" value="outdoors"> Outdoors</div>
+            </div>
+        </div>
+        <button onclick="startMatching()">Start Chatting</button>
     </div>
 
     <div id="video-container">
         <video id="remote-video" autoplay playsinline></video>
         <video id="local-video" autoplay playsinline muted></video>
-        <div style="position: absolute; bottom: 20px; left: 20px;">
-            <button onclick="location.reload()">Next/Skip</button>
+        <div class="overlay" id="peer-info">Waiting for match...</div>
+        <div class="controls">
+            <button class="skip" onclick="location.reload()">Skip</button>
         </div>
     </div>
 
@@ -39,45 +67,49 @@
         let peerConnection;
         const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-        async function startApp() {
-            const sex = document.getElementById('sex').value;
-            const age = parseInt(document.getElementById('age').value);
+        // Persistent Identity Management
+        let userId = localStorage.getItem('visio_user_id') || crypto.randomUUID();
+        localStorage.setItem('visio_user_id', userId);
+
+        async function startMatching() {
+            const selectedInterests = Array.from(document.querySelectorAll('#interests-list input:checked')).map(i => i.value);
             
-            // Get Geolocation
-            navigator.geolocation.getCurrentPosition(async (pos) => {
-                const { latitude, longitude } = pos.coords;
-                
-                // Switch UI
-                document.getElementById('setup').style.display = 'none';
-                document.getElementById('video-container').style.display = 'block';
+            const profileData = {
+                userId: userId,
+                sex: document.getElementById('sex').value,
+                age: parseInt(document.getElementById('age').value),
+                education: document.getElementById('education').value,
+                bio: document.getElementById('bio').value,
+                interests: selectedInterests
+            };
 
-                // Get Media
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                document.getElementById('local-video').srcObject = localStream;
+            // Save to Firebase via Server
+            socket.emit('save-profile', profileData);
 
-                // Join Matching Queue
-                socket.emit('join', { 
-                    sex, age, lat: latitude, lon: longitude, 
-                    distancePref: 100, agePref: 10 
-                });
-            });
+            // Toggle UI
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('video-container').style.display = 'block';
+
+            // Setup Media
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('local-video').srcObject = localStream;
+
+            // Enter Queue
+            socket.emit('join', profileData);
         }
 
         socket.on('matched', async (data) => {
+            // Update Overlay with Peer Info
+            const info = data.peerData;
+            document.getElementById('peer-info').innerHTML = 
+                `<strong>${info.age}y - ${info.education}</strong><br>${info.bio}<br><small>Interests: ${info.interests.join(', ')}</small>`;
+
             peerConnection = new RTCPeerConnection(config);
-            
-            // Add tracks to connection
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-            // Receive remote stream
-            peerConnection.ontrack = (event) => {
-                document.getElementById('remote-video').srcObject = event.streams[0];
-            };
-
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    socket.emit('signal', { to: data.peerId, signal: { candidate: event.candidate } });
-                }
+            peerConnection.ontrack = (e) => document.getElementById('remote-video').srcObject = e.streams[0];
+            peerConnection.onicecandidate = (e) => {
+                if (e.candidate) socket.emit('signal', { to: data.peerId, signal: { candidate: e.candidate } });
             };
 
             if (data.offer) {
