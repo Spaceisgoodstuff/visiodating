@@ -2,66 +2,66 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const admin = require('firebase-admin');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Serve static files from the "public" folder
+// 1. Firebase Initialization from Render Environment Variable
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: "https://visiodating-674d3-default-rtdb.europe-west1.firebasedatabase.app"
+});
+const db = admin.database();
+
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Queues for matching
-let users = {
-    male: [],
-    female: []
-};
-
-// Haversine formula for distance calculation
-function getDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Earth radius in km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-}
+// Queues for matching (Socket IDs)
+let queues = { male: [], female: [] };
 
 io.on('connection', (socket) => {
-    socket.on('join', (data) => {
-        // data = { sex, age, lat, lon, distancePref, agePref }
-        socket.userData = data;
+    
+    // Save or Update Profile
+    socket.on('save-profile', async (data) => {
+        // data: { userId, sex, age, bio, education, interests, lat, lon }
+        await db.ref('users/' + data.userId).set(data);
+    });
+
+    // Join Matchmaking
+    socket.on('join', async (data) => {
+        socket.userData = data; 
         const targetGender = data.sex === 'male' ? 'female' : 'male';
         
-        // Attempt to find a match
-        const matchIndex = users[targetGender].findIndex(peer => {
-            const dist = getDistance(data.lat, data.lon, peer.userData.lat, peer.userData.lon);
-            const ageDiff = Math.abs(data.age - peer.userData.age);
+        // Find best match in the opposite gender queue
+        let matchIndex = queues[targetGender].findIndex(peerSocket => {
+            const peer = peerSocket.userData;
+            const ageDiff = Math.abs(data.age - peer.age);
             
-            // Check if both users satisfy each other's filters
-            return dist <= data.distancePref && 
-                   dist <= peer.userData.distancePref &&
-                   ageDiff <= data.agePref &&
-                   ageDiff <= peer.userData.agePref;
+            // Simple logic: Gender match + Age within 5 years
+            return ageDiff <= 5; 
         });
 
         if (matchIndex !== -1) {
-            const peer = users[targetGender].splice(matchIndex, 1)[0];
-            // Notify both users they are matched
-            io.to(socket.id).emit('matched', { peerId: peer.id, offer: true });
-            io.to(peer.id).emit('matched', { peerId: socket.id, offer: false });
+            const peerSocket = queues[targetGender].splice(matchIndex, 1)[0];
+            
+            // Send peer profile info along with the match event
+            io.to(socket.id).emit('matched', { peerId: peerSocket.id, peerData: peerSocket.userData, offer: true });
+            io.to(peerSocket.id).emit('matched', { peerId: socket.id, peerData: socket.userData, offer: false });
         } else {
-            users[data.sex].push(socket);
+            queues[data.sex].push(socket);
         }
     });
 
+    // WebRTC Signaling Tunnel
     socket.on('signal', (data) => {
         io.to(data.to).emit('signal', { from: socket.id, signal: data.signal });
     });
 
     socket.on('disconnect', () => {
-        users.male = users.male.filter(s => s.id !== socket.id);
-        users.female = users.female.filter(s => s.id !== socket.id);
+        queues.male = queues.male.filter(s => s.id !== socket.id);
+        queues.female = queues.female.filter(s => s.id !== socket.id);
     });
 });
 
